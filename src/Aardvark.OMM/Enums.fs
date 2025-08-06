@@ -6,12 +6,21 @@ type MessageSeverity =
     | Error       = 2
     | Fatal       = 3
 
-type AlphaMode =
-    | Test  = 0
-    | Blend = 1
-
 type OpacityState =
-   | Transparent        = 0
-   | Opaque             = 1
-   | UnknownTransparent = 2
-   | UnknownOpaque      = 3
+    | Transparent        = 0
+    | Opaque             = 1
+    | UnknownTransparent = 2
+    | UnknownOpaque      = 3
+
+type UnknownStatePromotion =
+    | Nearest          = 0
+    | ForceOpaque      = 1
+    | ForceTransparent = 2
+
+/// Opacity micromap format.
+type OpacityFormat =
+    /// Two opacity states: Transparent, Opaque.
+    | Binary = 0
+
+    /// Four opacity states: Transparent, Opaque, UnknownTransparent, UnknownOpaque.
+    | Full   = 1

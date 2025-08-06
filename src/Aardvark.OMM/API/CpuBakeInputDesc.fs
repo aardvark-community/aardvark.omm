@@ -6,40 +6,39 @@ open Aardvark.OMM
 
 [<Flags>]
 type CpuBakeFlags =
-   | None = 0u
-   | EnableInternalThreads        = 1u
-   | DisableSpecialIndices        = 2u
-   | Force32BitIndices            = 4u
-   | DisableDuplicateDetection    = 8u
-   | EnableNearDuplicateDetection = 16u
-   | EnableValidation             = 32u
-   | Allow8BitIndices             = 64u
+    | None                         = 0u
+    | EnableInternalThreads        = 1u
+    | DisableSpecialIndices        = 2u
+    | Force32BitIndices            = 4u
+    | DisableDuplicateDetection    = 8u
+    | EnableNearDuplicateDetection = 16u
+    | EnableValidation             = 32u
+    | Allow8BitIndices             = 64u
+
+type AlphaMode =
+    | Test  = 0
+    | Blend = 1
 
 type TexCoordFormat =
-   | UNorm16 = 0
-   | Float16 = 1
-   | Float32 = 2
+    | UNorm16 = 0
+    | Float16 = 1
+    | Float32 = 2
 
 type IndexFormat =
-   | UInt16 = 0
-   | UInt32 = 1
-   | UInt8  = 2
+    | UInt16 = 0
+    | UInt32 = 1
+    | UInt8  = 2
 
 type Format =
-   | Invalid     = 0
-   | OC1_2_State = 1
-   | OC1_4_State = 2
-
-type UnknownStatePromotion =
-   | Nearest          = 0
-   | ForceOpaque      = 1
-   | ForceTransparent = 2
+    | Invalid     = 0
+    | OC1_2_State = 1
+    | OC1_4_State = 2
 
 type SpecialIndex =
-   | FullyTransparent        = -1
-   | FullyOpaque             = -2
-   | FullyUnknownTransparent = -3
-   | FullyUnknownOpaque      = -4
+    | FullyTransparent        = -1
+    | FullyOpaque             = -2
+    | FullyUnknownTransparent = -3
+    | FullyUnknownOpaque      = -4
 
 [<Struct; StructLayout(LayoutKind.Sequential)>]
 type CpuBakeInputDesc =

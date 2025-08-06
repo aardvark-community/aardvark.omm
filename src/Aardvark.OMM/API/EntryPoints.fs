@@ -46,14 +46,14 @@ module internal Omm =
     extern Result cpuDestroyBakeResult(CpuBakeResult bakeResult)
 
     [<DllImport(lib, EntryPoint = "ommCpuGetBakeResultDesc")>]
-    extern Result cpuGetBakeResultDesc(CpuBakeResult bakeResult, CpuBakeResultDesc* * desc)
+    extern Result cpuGetBakeResultDesc(CpuBakeResult bakeResult, CpuBakeResultDesc* & desc)
 
 
     [<DllImport(lib, EntryPoint = "ommCpuSerialize")>]
     extern Result cpuSerialize(Baker baker, [<In>] CpuDeserializedDesc& desc, [<Out>] CpuSerializedResult& outResult)
 
     [<DllImport(lib, EntryPoint = "ommCpuGetSerializedResultDesc")>]
-    extern Result cpuGetSerializedResultDesc(CpuSerializedResult result, CpuBlobDesc* * desc)
+    extern Result cpuGetSerializedResultDesc(CpuSerializedResult result, CpuBlobDesc* & desc)
 
     [<DllImport(lib, EntryPoint = "ommCpuDestroySerializedResultDesc")>]
     extern Result cpuDestroySerializedResultDesc(CpuSerializedResult result)
@@ -63,7 +63,7 @@ module internal Omm =
     extern Result cpuDeserialize(Baker baker, [<In>] CpuBlobDesc& desc, [<Out>] CpuDeserializedResult& outResult)
 
     [<DllImport(lib, EntryPoint = "ommCpuGetDeserializedResultDesc")>]
-    extern Result cpuGetDeserializedResultDesc(CpuDeserializedResult result, CpuDeserializedDesc* * desc)
+    extern Result cpuGetDeserializedResultDesc(CpuDeserializedResult result, CpuDeserializedDesc* & desc)
 
     [<DllImport(lib, EntryPoint = "ommCpuDestroyDeserializedResultDesc")>]
     extern Result cpuDestroyDeserializedResultDesc(CpuDeserializedResult result)
