@@ -1,0 +1,68 @@
+name: Build Native
+on:
+  workflow_dispatch:
+  push:
+    branches: 
+      - build-test
+    paths:
+      - .github/workflows/build-native.yml    
+jobs:
+  windows-x64:
+    name: Windows (x64)
+    runs-on: windows-2022
+    steps:  
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          cache: true
+      - name: Build
+        run: .\build-sdk.cmd
+      - name: Upload Windows native libs
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: lib/Native/Aardvark.OMM/windows/AMD64/
+  linux-x64:
+    name: Linux (x64)
+    runs-on: ubuntu-22.04
+    steps:  
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          cache: true
+      - name: Build
+        run: ./build-sdk.sh
+      - name: Upload Linux native libs
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: lib/Native/Aardvark.OMM/linux/AMD64/
+  build:
+    name: Build
+    runs-on: windows-latest
+    needs: 
+      - windows-x64
+      - linux-x64
+    steps:  
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download Linux dependencies 
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64
+          path: lib/Native/Aardvark.OMM/linux/AMD64/
+      - name: Download Windows dependencies
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+          path: lib/Native/Aardvark.OMM/windows/AMD64/
+      # - name: Create Pull Request
+      #   uses: peter-evans/create-pull-request@v7
+      #   with:
+      #     commit-message: "Update native libraries"
+      #     branch: sdk-ci-build
+      #     title: "Update native libraries"
