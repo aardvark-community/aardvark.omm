@@ -2,11 +2,14 @@
 
 open Aardvark.Base
 open Aardvark.Rendering
+open FSharp.NativeInterop
 open System
+open System.IO
 open System.Runtime.InteropServices
 open TypeMeta
 
 #nowarn "9"
+#nowarn "51"
 
 [<CLIMutable>]
 type AlphaSampler =
@@ -41,6 +44,21 @@ type BakeInput =
         /// Should be equivalent to how the texture is sampled at runtime.
         AlphaSampler  : AlphaSampler
     }
+
+type DuplicateDetection =
+    /// Will disable reuse of OMMs and instead produce duplicates omm-array data. Generally only needed for debug purposes.
+    | None = 0
+
+    /// Reuse duplicate OMMs.
+    | Exact = 1
+
+    /// This enables merging of "similar" OMMs where similarity is measured using hamming distance.
+    /// UT and UO are considered identical.
+    /// Pros: normally reduces resulting OMM size drastically, especially when there's overlapping UVs.
+    /// Cons: The merging comes at the cost of coverage.
+    /// The resulting OMM Arrays will have lower fraction of known states. For large working sets it can be quite CPU heavy to
+    /// compute.
+    | Near = 2
 
 [<CLIMutable>]
 type BakeSettings =
@@ -79,6 +97,24 @@ type BakeSettings =
         /// The baker will choose to downsample the most appropriate omm blocks (based on area, reuse, coverage and other factors)
         /// until this limit is met.
         MaxArrayDataSize        : uint32
+
+        /// Parallelize the baking process by using multi-threading.
+        Parallel                : bool
+
+        /// Disable the use of special indices in case the OMM-state is uniform. Only set to true for debug purposes.
+        /// Note: This prevents promotion of fully known OMMs to use special indices, however for invalid & degenerate UV triangles
+        /// special indices may still be set.
+        DisableSpecialIndices   : bool
+
+        /// Force 32-bit index format for the output OMM index buffer.
+        Force32BitIndices       : bool
+
+        /// Determines if and how duplicate OMMs are reused.
+        DuplicateDetection      : DuplicateDetection
+
+        /// Enable additional validation, when enabled additional processing is performed to validate quality and sanity of input data
+        /// which may help diagnose omm bake result or longer than expected bake times.
+        Validation              : bool
     }
 
     static member Default =
@@ -89,37 +125,12 @@ type BakeSettings =
           UnknownStatePromotion   = UnknownStatePromotion.ForceOpaque
           UnresolvedTriangleState = OpacityState.UnknownOpaque
           MaxSubdivisionLevel     = 8uy
-          MaxArrayDataSize        = UInt32.MaxValue }
-
-[<Flags>]
-type BakeFlags =
-    | None                         = 0u
-
-    /// Parallelize the baking process by using multi-threading.
-    | Parallel                     = 1u
-
-    /// Disable the use of special indices in case the OMM-state is uniform. Only set to true for debug purposes.
-    /// Note: This prevents promotion of fully known OMMs to use special indices, however for invalid & degenerate UV triangles
-    /// special indices may still be set.
-    | DisableSpecialIndices        = 2u
-
-    /// Force 32-bit index format for the output OMM index buffer.
-    | Force32BitIndices            = 4u
-
-    /// Will disable reuse of OMMs and instead produce duplicates omm-array data. Generally only needed for debug purposes.
-    | DisableDuplicateDetection    = 8u
-
-    /// This enables merging of "similar" OMMs where similarity is measured using hamming distance.
-    /// UT and UO are considered identical.
-    /// Pros: normally reduces resulting OMM size drastically, especially when there's overlapping UVs.
-    /// Cons: The merging comes at the cost of coverage.
-    /// The resulting OMM Arrays will have lower fraction of known states. For large working sets it can be quite CPU heavy to
-    /// compute. Note: can not be used if DisableDuplicateDetection is set.
-    | NearDuplicateDetection       = 16u
-
-    /// Enable additional validation, when enabled additional processing is performed to validate quality and sanity of input data
-    /// which may help diagnose omm bake result or longer than expected bake times.
-    | Validation                   = 32u
+          MaxArrayDataSize        = UInt32.MaxValue
+          Parallel                = true
+          DisableSpecialIndices   = false
+          Force32BitIndices       = false
+          DuplicateDetection      = DuplicateDetection.Exact
+          Validation              = false }
 
 module internal ImageCache =
 
@@ -172,19 +183,40 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
 
     member _.Handle = handle
 
+    /// The version of the NVIDIA OMM SDK
     static member LibraryVersion =
         let desc = API.Omm.getLibraryDesc()
         Version(int desc.versionMajor, int desc.versionMinor, int desc.versionBuild)
 
-    member _.Bake(input: BakeInput, settings: BakeSettings, [<Optional; DefaultParameterValue(BakeFlags.Parallel)>] flags: BakeFlags) =
+    /// <summary>
+    /// Bake the given input data into a micromap.
+    /// </summary>
+    /// <param name="input">The input data to process.</param>
+    /// <param name="settings">The settings to use for the bake process.</param>
+    member _.Bake(input: BakeInput, settings: BakeSettings) : Micromap =
         if not handle.IsValid then
             raise <| ObjectDisposedException("Baker")
 
         let flags =
-            if messageCallback = null then
-                flags &&& ~~~BakeFlags.Validation
-            else
-                flags
+            [
+                if settings.Parallel then
+                    API.CpuBakeFlags.EnableInternalThreads
+
+                if settings.DisableSpecialIndices then
+                    API.CpuBakeFlags.DisableSpecialIndices
+
+                if settings.Force32BitIndices then
+                    API.CpuBakeFlags.Force32BitIndices
+
+                match settings.DuplicateDetection with
+                | DuplicateDetection.None -> API.CpuBakeFlags.DisableDuplicateDetection
+                | DuplicateDetection.Near -> API.CpuBakeFlags.EnableNearDuplicateDetection
+                | _ -> ()
+
+                if settings.Validation && messageCallback <> null then
+                    API.CpuBakeFlags.EnableValidation
+            ]
+            |> List.fold (|||) API.CpuBakeFlags.None
 
         let samplerAddress =
             match input.AlphaSampler.Address with
@@ -261,10 +293,112 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
         let mutable result = API.CpuBakeResult.Null
         API.Omm.cpuBake(handle, &inputDesc, &result) |> Result.check "failed to bake input"
 
-        new Micromap(handle, result, &inputDesc)
+        try
+            let mutable pResultDesc = NativePtr.zero<API.CpuBakeResultDesc>
+            API.Omm.cpuGetBakeResultDesc(result, &pResultDesc) |> Result.check "failed to get bake result"
 
-    member inline this.Bake(input: BakeInput, [<Optional; DefaultParameterValue(BakeFlags.Parallel)>] flags: BakeFlags) =
-        this.Bake(input, BakeSettings.Default, flags)
+            new BakedMicromap(result, &inputDesc, NativePtr.toByRef pResultDesc)
+        with _ ->
+            API.Omm.cpuDestroyBakeResult result |> ignore
+            reraise()
+
+    /// <summary>
+    /// Bakes the given input data into a micromap.
+    /// </summary>
+    /// <param name="input">The input data to process.</param>
+    member inline this.Bake(input: BakeInput) : Micromap =
+        this.Bake(input, BakeSettings.Default)
+
+    /// <summary>
+    /// Serializes the given micromap and writes it to a stream.
+    /// </summary>
+    /// <param name="micromap">The micromap to serialize.</param>
+    /// <param name="stream">The stream to write the serialized data to.</param>
+    /// <param name="compress">Indicates whether the data is compressed. Default is false.</param>
+    member _.Serialize(micromap: Micromap, stream: Stream, [<Optional; DefaultParameterValue(false)>] compress: bool) =
+        if not handle.IsValid then
+            raise <| ObjectDisposedException("Baker")
+
+        let flags = if compress then API.CpuSerializeFlags.Compress else API.CpuSerializeFlags.None
+
+        let mutable desc = API.CpuDeserializedDesc(flags, 1, &&micromap.inputDesc, 1, &&micromap.resultDesc)
+        let mutable result = API.CpuSerializedResult.Null
+        API.Omm.cpuSerialize(handle, &desc, &result) |> Result.check "failed to serialize micromaps"
+
+        try
+            let mutable pBlob = NativePtr.zero<API.CpuBlobDesc>
+            API.Omm.cpuGetSerializedResultDesc(result, &pBlob) |> Result.check "failed to retrieve serialized result description"
+
+            use src = new UnmanagedMemoryStream(NativePtr.ofNativeInt pBlob.[0].data, int64 pBlob.[0].size)
+            src.CopyTo(stream)
+        finally
+            API.Omm.cpuDestroySerializedResult result |> Result.check "failed destroy serialized result description"
+
+    /// <summary>
+    /// Serializes the given micromap and write it to a file.
+    /// </summary>
+    /// <param name="micromap">The micromap to serialize.</param>
+    /// <param name="path">The path of the file to write the serialized data to.</param>
+    /// <param name="compress">Indicates whether the data is compressed. Default is false.</param>
+    member inline this.Serialize(micromap: Micromap, path: string, [<Optional; DefaultParameterValue(false)>] compress: bool) =
+        use stream = File.OpenWrite(path)
+        this.Serialize(micromap, stream, compress)
+
+    /// <summary>
+    /// Deserializes a micromap from the given stream.
+    /// </summary>
+    /// <param name="stream">The stream to read the serialized data from.</param>
+    member this.Deserialize(stream: Stream) : Micromap =
+        if not handle.IsValid then
+            raise <| ObjectDisposedException("Baker")
+
+        let data = Stream.readAllBytes stream
+        use pData = fixed data
+
+        let mutable blobDesc = API.CpuBlobDesc(pData.Address, uint64 data.LongLength)
+        let mutable result = API.CpuDeserializedResult.Null
+        API.Omm.cpuDeserialize(handle, &blobDesc, &result) |> Result.check "failed to deserialize micromaps"
+
+        try
+            let mutable pDesc = NativePtr.zero<API.CpuDeserializedDesc>
+            API.Omm.cpuGetDeserializedDesc(result, &pDesc) |> Result.check "failed to retrieve deserialize result description"
+            let desc = pDesc.[0]
+
+            if desc.numInputDescs <> 1 then
+                failwithf $"Deserialized data contains {desc.numInputDescs} input descriptions but expected 1"
+
+            if desc.numResultDescs <> 1 then
+                failwithf $"Deserialized data contains {desc.numResultDescs} result descriptions but expected 1"
+
+            new DeserializedMicromap(
+                result,
+                NativePtr.toByRef desc.inputDescs,
+                NativePtr.toByRef desc.resultDescs
+            )
+        with _ ->
+            API.Omm.cpuDestroyDeserializedResult result |> ignore
+            reraise()
+
+    /// <summary>
+    /// Deserializes a micromap from the given file.
+    /// </summary>
+    /// <param name="path">The path of the file to read the serialized data from.</param>
+    member inline this.Deserialize(path: string) : Micromap =
+        use stream = File.OpenRead(path)
+        this.Deserialize(stream)
+
+    /// <summary>
+    /// Saves debug images to the given path.
+    /// </summary>
+    /// <param name="micromap">The micromap to save.</param>
+    /// <param name="path">The path of the destination folder.</param>
+    /// <param name="detailedCutout">If true, generates a cropped and zoomed-in view of the micromap.</param>
+    member this.SaveDebugImages(micromap: Micromap, path: string, [<Optional; DefaultParameterValue(false)>] detailedCutout: bool) =
+        if not handle.IsValid then
+            raise <| ObjectDisposedException("Baker")
+
+        let mutable desc = API.DebugSaveImagesDesc(path, "", detailedCutout, false, false, not detailedCutout)
+        API.Omm.debugSaveAsImages(handle, &micromap.inputDesc, &micromap.resultDesc, &desc) |> Result.check "failed to save debug images"
 
     member _.Dispose() =
         if handle.IsValid then

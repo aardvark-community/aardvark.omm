@@ -116,12 +116,12 @@ module OmmTests =
         baker.Dispose()
 
     [<Test>]
-    let ``Baking and debug save``() =
+    let ``Save debug images``() =
         use baker = new Baker()
         use micromap = baker.Bake(sampleInput())
 
         Path.tempDir (fun outputDir ->
-            micromap.SaveDebug outputDir
+            baker.SaveDebugImages(micromap, outputDir)
             let files = Directory.GetFiles(outputDir, "*.png")
 
             files.Length |> should equal 1
@@ -131,3 +131,21 @@ module OmmTests =
 
             PixImage.equal expected result |> should be True
         )
+
+    [<Test>]
+    let Serialization ([<Values>] compress: bool) =
+        use baker = new Baker()
+        use original = baker.Bake(sampleInput())
+
+        use stream = new MemoryStream()
+        baker.Serialize(original, stream, compress)
+        let dataOriginal = stream.ToArray()
+
+        stream.Seek(0L, SeekOrigin.Begin) |> ignore
+        let deserialized = baker.Deserialize stream
+
+        stream.Seek(0L, SeekOrigin.Begin) |> ignore
+        baker.Serialize(deserialized, stream, compress)
+        let dataDeserialized = stream.ToArray()
+
+        dataDeserialized |> should equal dataOriginal

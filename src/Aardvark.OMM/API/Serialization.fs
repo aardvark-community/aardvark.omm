@@ -13,6 +13,7 @@ type CpuBlobDesc =
     struct
         val data : nativeint
         val size : uint64
+        new (data, size) = { data = data; size = size }
     end
 
 [<Struct; StructLayout(LayoutKind.Sequential)>]
@@ -23,6 +24,15 @@ type CpuDeserializedDesc =
         val inputDescs     : nativeptr<CpuBakeInputDesc>
         val numResultDescs : int
         val resultDescs    : nativeptr<CpuBakeResultDesc>
+
+        new (flags, numInputDescs, inputDescs, numResultDescs, resultDescs) =
+            {
+                flags          = flags
+                numInputDescs  = numInputDescs
+                inputDescs     = inputDescs
+                numResultDescs = numResultDescs
+                resultDescs    = resultDescs
+            }
     end
 
 [<Struct>]
