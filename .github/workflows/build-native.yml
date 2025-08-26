@@ -44,6 +44,9 @@ jobs:
   build:
     name: Push Changes
     runs-on: windows-latest
+    permissions:
+      contents: write
+      pull-requests: write
     needs: 
       - windows-x64
       - linux-x64
