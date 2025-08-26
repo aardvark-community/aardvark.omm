@@ -89,7 +89,7 @@ module OmmTests =
         {
             Indices       = indices
             TextureCoords = textureCoords
-            AlphaTexture  = alphaTexture
+            AlphaTexture  = AlphaPixImage alphaTexture
             AlphaSampler  = AlphaSampler.Default
         }
 

@@ -36,14 +36,19 @@ type BakeInput =
         TextureCoords : V2f[]
 
         /// The alpha texture to sample.
-        /// Channel type must be uint8 or convertible to float32.
-        /// If the image does not contain an alpha channel, the first channel is used.
-        AlphaTexture  : PixImage
+        AlphaTexture  : IAlphaTexture
 
         /// Describes how the alpha texture is sampled.
         /// Should be equivalent to how the texture is sampled at runtime.
         AlphaSampler  : AlphaSampler
     }
+
+type MicromapFormat =
+    /// Encode the opacity of a triangle with a single bit (transparent or opaque).
+    | OpacityTwoState  = 1us
+
+    /// Encode the opacity of a triangle with two bits (transparent, opaque, and two unknown states that are to be resolved in an anyhit shader).
+    | OpacityFourState = 2us
 
 type DuplicateDetection =
     /// Will disable reuse of OMMs and instead produce duplicates omm-array data. Generally only needed for debug purposes.
@@ -64,7 +69,7 @@ type DuplicateDetection =
 type BakeSettings =
     {
         /// The format of the micromap.
-        Format                  : OpacityFormat
+        Format                  : MicromapFormat
 
         /// Configures the target resolution when running dynamic subdivision level.
         /// <= 0: disabled.
@@ -91,7 +96,7 @@ type BakeSettings =
         /// MaxSubdivisionLevel level must be in range [0, 12].
         /// When DynamicSubdivisionScale is enabled MaxSubdivisionLevel is the max subdivision level allowed.
         /// When DynamicSubdivisionScale is disabled MaxSubdivisionLevel is the subdivision level applied uniformly to all triangles.
-        MaxSubdivisionLevel     : uint8
+        MaxSubdivisionLevel     : uint32
 
         /// Max allowed size in bytes of ommCpuBakeResultDesc::arrayData
         /// The baker will choose to downsample the most appropriate omm blocks (based on area, reuse, coverage and other factors)
@@ -118,13 +123,13 @@ type BakeSettings =
     }
 
     static member Default =
-        { Format                  = OpacityFormat.Full
+        { Format                  = MicromapFormat.OpacityFourState
           DynamicSubdivisionScale = 2.0f
           RejectionThreshold      = 0.0f
           AlphaCutoff             = 0.5f
           UnknownStatePromotion   = UnknownStatePromotion.ForceOpaque
           UnresolvedTriangleState = OpacityState.UnknownOpaque
-          MaxSubdivisionLevel     = 8uy
+          MaxSubdivisionLevel     = 8u
           MaxArrayDataSize        = UInt32.MaxValue
           Parallel                = true
           DisableSpecialIndices   = false
@@ -132,13 +137,9 @@ type BakeSettings =
           DuplicateDetection      = DuplicateDetection.Exact
           Validation              = false }
 
-module internal ImageCache =
-
-    [<Literal>]
-    let defaultSize = 256L * 1024L * 1024L // 256MiB
 
 /// CPU-based baker for opacity micromaps.
-type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; DefaultParameterValue(ImageCache.defaultSize)>] imageCacheSize: int64) =
+type Baker (messageCallback: Action<MessageSeverity, string>) =
     let mutable handle =
         let mutable baker = API.Baker.Null
 
@@ -152,19 +153,6 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
         API.Omm.createBaker(&desc, &baker) |> Result.check "failed to create baker"
         baker
 
-    let textures =
-        let getImageSize (pi: PixImage) = int64 pi.PixelSize * pi.WidthL * pi.HeightL
-
-        let createTexture (pi: PixImage) =
-            let t = pi |> Texture.ofPixImage handle
-            t.Acquire()
-            t
-
-        LruCache<PixImage, Texture>(
-            imageCacheSize, getImageSize, createTexture,
-            fun _ -> _.Release()
-        )
-
     static let defaultMessageLogger (severity: MessageSeverity) (message: string) =
         match severity with
         | MessageSeverity.Error | MessageSeverity.Fatal ->
@@ -176,10 +164,9 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
         | _ ->
             Log.line "[OMM] %s" message
 
-    new ([<Optional; DefaultParameterValue(true)>] logMessages: bool,
-         [<Optional; DefaultParameterValue(ImageCache.defaultSize)>] imageCacheSize: int64) =
+    new ([<Optional; DefaultParameterValue(true)>] logMessages: bool) =
         let callback = if logMessages then Action<_, _> defaultMessageLogger else null
-        new Baker(callback, imageCacheSize)
+        new Baker(callback)
 
     member _.Handle = handle
 
@@ -189,11 +176,21 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
         Version(int desc.versionMajor, int desc.versionMinor, int desc.versionBuild)
 
     /// <summary>
+    /// Prepares a texture for baking.
+    /// </summary>
+    /// <param name="texture">The texture to prepare.</param>
+    member _.PrepareTexture(texture: IAlphaTexture) : INativeAlphaTexture =
+        if not handle.IsValid then
+            raise <| ObjectDisposedException("Baker")
+
+        NativeAlphaTexture.ofAlphaTexture handle texture
+
+    /// <summary>
     /// Bake the given input data into a micromap.
     /// </summary>
     /// <param name="input">The input data to process.</param>
     /// <param name="settings">The settings to use for the bake process.</param>
-    member _.Bake(input: BakeInput, settings: BakeSettings) : Micromap =
+    member _.Bake(input: BakeInput, settings: BakeSettings) : CpuMicromap =
         if not handle.IsValid then
             raise <| ObjectDisposedException("Baker")
 
@@ -240,6 +237,9 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
             )
 
         let indexFormat =
+            if input.Indices = null then
+                raise <| NullReferenceException("Index buffer must not be null.")
+
             match input.Indices.GetType().GetElementType() with
             | Int8 | UInt8   -> API.IndexFormat.UInt8
             | Int16 | UInt16 -> API.IndexFormat.UInt16
@@ -248,9 +248,9 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
 
         let format =
             match settings.Format with
-            | OpacityFormat.Binary -> API.Format.OC1_2_State
-            | OpacityFormat.Full   -> API.Format.OC1_4_State
-            | fmt -> raise <| ArgumentException($"Invalid opacity format: {fmt}")
+            | MicromapFormat.OpacityTwoState  -> API.Format.OC1_2_State
+            | MicromapFormat.OpacityFourState -> API.Format.OC1_4_State
+            | fmt -> raise <| ArgumentException($"Invalid micromap format: {fmt}")
 
         let unresolvedState =
             match settings.UnresolvedTriangleState with
@@ -262,10 +262,10 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
 
         use pTexCoords = fixed input.TextureCoords
         use pIndices = new FixedArray(input.Indices)
-        use texture = textures.[input.AlphaTexture]
+        use texture = NativeAlphaTexture.ofAlphaTexture handle input.AlphaTexture
 
         let mutable inputDesc = Unchecked.defaultof<API.CpuBakeInputDesc>
-        inputDesc.bakeFlags                         <- Enum.convert flags
+        inputDesc.bakeFlags                         <- flags
         inputDesc.texture                           <- texture.Handle
         inputDesc.samplerDesc                       <- samplerDesc
         inputDesc.alphaMode                         <- API.AlphaMode.Test
@@ -285,7 +285,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
         inputDesc.formats                           <- NativePtr.zero
         inputDesc.unknownStatePromotion             <- settings.UnknownStatePromotion
         inputDesc.unresolvedTriState                <- unresolvedState
-        inputDesc.maxSubdivisionLevel               <- settings.MaxSubdivisionLevel
+        inputDesc.maxSubdivisionLevel               <- uint8 <| min settings.MaxSubdivisionLevel 12u
         inputDesc.maxArrayDataSize                  <- settings.MaxArrayDataSize
         inputDesc.subdivisionLevels                 <- NativePtr.zero
         inputDesc.maxWorkloadSize                   <- UInt64.MaxValue
@@ -297,7 +297,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
             let mutable pResultDesc = NativePtr.zero<API.CpuBakeResultDesc>
             API.Omm.cpuGetBakeResultDesc(result, &pResultDesc) |> Result.check "failed to get bake result"
 
-            new BakedMicromap(result, &inputDesc, NativePtr.toByRef pResultDesc)
+            CpuMicromap.ofBakeResult result texture inputDesc pResultDesc.[0]
         with _ ->
             API.Omm.cpuDestroyBakeResult result |> ignore
             reraise()
@@ -306,7 +306,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
     /// Bakes the given input data into a micromap.
     /// </summary>
     /// <param name="input">The input data to process.</param>
-    member inline this.Bake(input: BakeInput) : Micromap =
+    member inline this.Bake(input: BakeInput) : CpuMicromap =
         this.Bake(input, BakeSettings.Default)
 
     /// <summary>
@@ -315,7 +315,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
     /// <param name="micromap">The micromap to serialize.</param>
     /// <param name="stream">The stream to write the serialized data to.</param>
     /// <param name="compress">Indicates whether the data is compressed. Default is false.</param>
-    member _.Serialize(micromap: Micromap, stream: Stream, [<Optional; DefaultParameterValue(false)>] compress: bool) =
+    member _.Serialize(micromap: CpuMicromap, stream: Stream, [<Optional; DefaultParameterValue(false)>] compress: bool) =
         if not handle.IsValid then
             raise <| ObjectDisposedException("Baker")
 
@@ -340,7 +340,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
     /// <param name="micromap">The micromap to serialize.</param>
     /// <param name="path">The path of the file to write the serialized data to.</param>
     /// <param name="compress">Indicates whether the data is compressed. Default is false.</param>
-    member inline this.Serialize(micromap: Micromap, path: string, [<Optional; DefaultParameterValue(false)>] compress: bool) =
+    member inline this.Serialize(micromap: CpuMicromap, path: string, [<Optional; DefaultParameterValue(false)>] compress: bool) =
         use stream = File.OpenWrite(path)
         this.Serialize(micromap, stream, compress)
 
@@ -348,7 +348,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
     /// Deserializes a micromap from the given stream.
     /// </summary>
     /// <param name="stream">The stream to read the serialized data from.</param>
-    member this.Deserialize(stream: Stream) : Micromap =
+    member this.Deserialize(stream: Stream) : CpuMicromap =
         if not handle.IsValid then
             raise <| ObjectDisposedException("Baker")
 
@@ -370,11 +370,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
             if desc.numResultDescs <> 1 then
                 failwithf $"Deserialized data contains {desc.numResultDescs} result descriptions but expected 1"
 
-            new DeserializedMicromap(
-                result,
-                NativePtr.toByRef desc.inputDescs,
-                NativePtr.toByRef desc.resultDescs
-            )
+            CpuMicromap.ofDeserializedResult result desc.inputDescs.[0] desc.resultDescs.[0]
         with _ ->
             API.Omm.cpuDestroyDeserializedResult result |> ignore
             reraise()
@@ -383,7 +379,7 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
     /// Deserializes a micromap from the given file.
     /// </summary>
     /// <param name="path">The path of the file to read the serialized data from.</param>
-    member inline this.Deserialize(path: string) : Micromap =
+    member inline this.Deserialize(path: string) : CpuMicromap =
         use stream = File.OpenRead(path)
         this.Deserialize(stream)
 
@@ -391,18 +387,25 @@ type Baker (messageCallback: Action<MessageSeverity, string>, [<Optional; Defaul
     /// Saves debug images to the given path.
     /// </summary>
     /// <param name="micromap">The micromap to save.</param>
-    /// <param name="path">The path of the destination folder.</param>
-    /// <param name="detailedCutout">If true, generates a cropped and zoomed-in view of the micromap.</param>
-    member this.SaveDebugImages(micromap: Micromap, path: string, [<Optional; DefaultParameterValue(false)>] detailedCutout: bool) =
+    /// <param name="path">The path of the destination folder, or null for using the working directory.</param>
+    /// <param name="detailedCutout">If true, generates a cropped and zoomed-in view of the micromap. Default is false.</param>
+    member this.SaveDebugImages(micromap: CpuMicromap,
+                                [<Optional; DefaultParameterValue(null : string)>] path: string,
+                                [<Optional; DefaultParameterValue(false)>] detailedCutout: bool) =
         if not handle.IsValid then
             raise <| ObjectDisposedException("Baker")
+
+        let path =
+            if path = null then
+                Directory.GetCurrentDirectory()
+            else
+                Path.GetFullPath path
 
         let mutable desc = API.DebugSaveImagesDesc(path, "", detailedCutout, false, false, not detailedCutout)
         API.Omm.debugSaveAsImages(handle, &micromap.inputDesc, &micromap.resultDesc, &desc) |> Result.check "failed to save debug images"
 
     member _.Dispose() =
         if handle.IsValid then
-            textures.Capacity <- 0L
             API.Omm.destroyBaker handle |> Result.check "failed to destroy baker"
             handle <- API.Baker.Null
 

@@ -16,11 +16,3 @@ type UnknownStatePromotion =
     | Nearest          = 0
     | ForceOpaque      = 1
     | ForceTransparent = 2
-
-/// Opacity micromap format.
-type OpacityFormat =
-    /// Two opacity states: Transparent, Opaque.
-    | Binary = 0
-
-    /// Four opacity states: Transparent, Opaque, UnknownTransparent, UnknownOpaque.
-    | Full   = 1
