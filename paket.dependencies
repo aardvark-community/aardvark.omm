@@ -6,10 +6,10 @@ storage: none
 nuget Aardvark.Build                    ~> 2.0.3
 nuget FSharp.Core                       >= 8.0.0 lowest_matching: true
 
-nuget Aardvark.Rendering                ~> 5.6.0-prerelease0008
+nuget Aardvark.Rendering                ~> 5.6.0-prerelease0009
 
 // Demo & Tests
-nuget Aardvark.Application.Utilities    ~> 5.6.0-prerelease0008
+nuget Aardvark.Application.Utilities    ~> 5.6.0-prerelease0009
 nuget Aardvark.PixImage.ImageSharp      ~> 3.0.2
 
 nuget NUnit                             ~> 3.14.0

@@ -21,7 +21,9 @@ module internal Utilities =
         let toUsageCountsArray (count: uint32) (ptr: nativeptr<API.CpuOpacityMicromapUsageCount>) =
             let arr = Array.zeroCreate<MicromapUsage> <| int count
             for i = 0 to arr.Length - 1 do
-                arr.[i] <- MicromapUsage(ptr.[i].count, uint32 ptr.[i].subdivisionLevel, unbox <| ptr.[i].format)
+                arr.[i].Count <- ptr.[i].count
+                arr.[i].Level <- uint32 ptr.[i].subdivisionLevel
+                arr.[i].Format <- unbox <| ptr.[i].format
             arr
 
 [<AbstractClass>]
