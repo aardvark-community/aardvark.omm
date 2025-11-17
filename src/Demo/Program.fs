@@ -165,7 +165,7 @@ module Effect =
             let shadowed =
                 let direction = Vec.normalize (uniform.LightLocation - position)
                 let flags = RayFlags.SkipClosestHitShader ||| RayFlags.TerminateOnFirstHit ||| RayFlags.CullFrontFacingTriangles
-                mainScene.TraceRay<bool>(position, direction, payload = true, miss = "MissShadow", flags = flags, minT = 0.01f)
+                mainScene.TraceRay<bool>(position, direction, payload = true, miss = MissShader.Shadow, flags = flags, minT = 0.01f)
 
             let color =
                 let diffuse = diffuse * diffuseLighting normal position
@@ -272,7 +272,7 @@ module Effect =
 module Program =
 
     [<EntryPoint>]
-    let main argv =
+    let main _argv =
         Aardvark.Init()
 
         use win =
@@ -368,7 +368,7 @@ module Program =
                 Micromap(result.Data)
 
             geometry
-            |> TraceObject.ofIndexedGeometry micromap GeometryFlags.None Trafo3d.Identity
+            |> TraceObject.ofIndexedGeometryWithMicromap GeometryFlags.None Trafo3d.Identity micromap
             |> TraceObject.transform (Trafo3d.Scale(128.0, 128.0, 64.0))
             |> TraceObject.hitGroup HitGroup.Ceiling
 
