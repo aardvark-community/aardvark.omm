@@ -6,6 +6,9 @@ projectUrl http://github.com/aardvark-community
 licenseUrl http://www.apache.org/licenses/LICENSE-2.0.txt
 repositoryType git
 repositoryUrl https://github.com/aardvark-community/aardvark.omm
+readme README.md
 description
     Wrapper for the NVIDIA OMM SDK with Aardvark-style native dependencies.
 include-pdbs true
+files
+    ../../README.md => .
